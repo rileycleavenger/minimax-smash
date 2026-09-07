@@ -6,8 +6,10 @@ const char* actionName(Action a) {
         case ACT_JUMP:   return "JUMP";
         case ACT_NORMAL: return "NORMAL";
         case ACT_SMASH:  return "SMASH";
-        case ACT_BLOCK:  return "BLOCK";
-        default:         return "-";
+        case ACT_BLOCK:   return "BLOCK";
+        case ACT_ADVANCE: return "ADVANCE";
+        case ACT_RETREAT: return "RETREAT";
+        default:          return "-";
     }
 }
 
@@ -74,8 +76,12 @@ bool actionHasEffect(const Fighter& f, Action a) {
         case ACT_JUMP:   return f.jumpLock == 0 && f.jumpsLeft > 0;
         case ACT_BLOCK:  return f.onGround;
         case ACT_NORMAL:
-        case ACT_SMASH:  return true;
-        default:         return false;
+        case ACT_SMASH:   return true;
+        // Movement always does something, even if the ledge clamp reduces it to
+        // standing still: it is the one action that keeps the fighter idle.
+        case ACT_ADVANCE:
+        case ACT_RETREAT: return true;
+        default:          return false;
     }
 }
 
@@ -131,9 +137,18 @@ static void advanceState(Fighter& f) {
     }
 }
 
+// Walking into the ledge is never what anyone meant, so ground movement is
+// clamped at the stage edge. Air drift is not: that is how recovery works.
+static int8_t clampToStage(const Fighter& f, int8_t dir) {
+    if (!f.onGround || dir == 0) return dir;
+    const float nx = f.x + dir * charStats(f.charId).walkSpeed;
+    return (nx < STAGE_LEFT || nx > STAGE_RIGHT) ? (int8_t)0 : dir;
+}
+
 // The deterministic locomotion rule. It runs identically inside the search and
-// inside the live game, so the CPU never mispredicts its own movement. When the
-// CPU searches, it assumes the human uses this same rule (they approach).
+// inside the live game, so the CPU never mispredicts its own movement. It is the
+// default for every action that is not itself a movement action, and it is what
+// the CPU assumes about a human whose stick it cannot see.
 static int8_t autoWalkDir(const Fighter& f, const Fighter& other) {
     bool offstage = (f.x < STAGE_LEFT || f.x > STAGE_RIGHT);
     if (!f.onGround && offstage) {
@@ -142,13 +157,7 @@ static int8_t autoWalkDir(const Fighter& f, const Fighter& other) {
     float dx = other.x - f.x;
     float spacing = charStats(f.charId).moves[MOVE_NORMAL].reach * 0.7f;
     if (std::fabs(dx) <= spacing) return 0;
-    int8_t dir = (dx > 0.0f) ? (int8_t)1 : (int8_t)-1;
-    // Never walk yourself off the ledge.
-    if (f.onGround) {
-        float nx = f.x + dir * charStats(f.charId).walkSpeed;
-        if (nx < STAGE_LEFT || nx > STAGE_RIGHT) return 0;
-    }
-    return dir;
+    return clampToStage(f, (dx > 0.0f) ? (int8_t)1 : (int8_t)-1);
 }
 
 static void applyAction(GameState& s, int i, Action a) {
@@ -203,6 +212,24 @@ static void applyAction(GameState& s, int i, Action a) {
             f.hitUsed = false;
             f.walkDir = 0;
             break;
+
+        case ACT_ADVANCE:
+        case ACT_RETREAT: {
+            // Deliberately leaves the fighter in ST_IDLE, which is the only
+            // state physics will walk. Overrides the auto-walk default above.
+            const float  reach = c.moves[MOVE_NORMAL].reach;
+            const float  want  = reach * ((a == ACT_ADVANCE) ? ADVANCE_DIST : RETREAT_DIST);
+            const float  dx    = other.x - f.x;
+            const float  sep   = std::fabs(dx);
+            const int8_t toward = (dx >= 0.0f) ? (int8_t)1 : (int8_t)-1;
+            // Dead band of one step, so arriving at the target does not turn
+            // into a stutter across it.
+            int8_t dir = 0;
+            if (sep > want + c.walkSpeed)      dir = toward;
+            else if (sep < want - c.walkSpeed) dir = (int8_t)-toward;
+            f.walkDir = clampToStage(f, dir);
+            break;
+        }
 
         default:
             break;
@@ -350,6 +377,9 @@ static void checkKO(GameState& s, int i, FrameEvents* ev) {
 void stepFrame(GameState& s, Action a0, Action a1, FrameEvents* ev) {
     if (matchOver(s)) return;
 
+    const float  wasDamage[2] = { s.f[0].damage, s.f[1].damage };
+    const int8_t wasStocks[2] = { s.f[0].stocks, s.f[1].stocks };
+
     const Action acts[2] = { a0, a1 };
     for (int i = 0; i < 2; ++i) advanceState(s.f[i]);
     for (int i = 0; i < 2; ++i) applyAction(s, i, acts[i]);
@@ -357,6 +387,13 @@ void stepFrame(GameState& s, Action a0, Action a1, FrameEvents* ev) {
     for (int i = 0; i < 2; ++i) physics(s.f[i]);
     resolveHits(s, ev);
     for (int i = 0; i < 2; ++i) checkKO(s, i, ev);
+
+    const bool somethingHappened =
+        s.f[0].damage != wasDamage[0] || s.f[1].damage != wasDamage[1] ||
+        s.f[0].stocks != wasStocks[0] || s.f[1].stocks != wasStocks[1];
+    if (somethingHappened)                  s.stallFrames = 0;
+    else if (s.stallFrames < STALL_CAP)     s.stallFrames++;
+
     s.frame++;
 }
 

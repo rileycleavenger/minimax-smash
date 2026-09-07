@@ -475,6 +475,6 @@ void drawHud(const GameState& s, const char* label0, const char* label1, const c
 
     DrawText(headline, SCREEN_W / 2 - MeasureText(headline, 18) / 2, 18, 18, Color{ 180, 195, 220, 255 });
 
-    const char* keys = "A/D move   W jump   J normal   K smash   L block   |   1-8 cpu level   C/V swap chars   TAB debug   R reset";
+    const char* keys = "A/D move   W jump   J normal   K smash   L block   |   1-6 cpu level   C/V swap chars   TAB debug   R reset";
     DrawText(keys, SCREEN_W / 2 - MeasureText(keys, 13) / 2, 44, 13, Color{ 105, 118, 142, 255 });
 }

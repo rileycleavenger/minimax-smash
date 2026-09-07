@@ -2,16 +2,25 @@
 #include <cstdint>
 #include "stats.h"
 
-// The four searchable moves. ACT_NONE is *not* part of the search space; it is
-// only used by the live game while the CPU is waiting on a decision, and by the
-// human player when no button is held.
+// The searchable moves. Movement is one of them: the other four all leave
+// ST_IDLE the instant they are applied -- Block pins you, Normal and Smash
+// commit you, Jump puts you in the air -- and a grounded fighter only walks
+// while it is idle, so without Advance/Retreat the CPU had no ground movement at
+// all and could never back off. That costs branching: 36 joint actions per node
+// against 16, which is what caps the ladder at MAX_CPU_LEVEL.
+//
+// ACT_NONE is *not* part of the search space; it is only used by the live game
+// while the CPU is waiting on a decision, and by the human player when no button
+// is held.
 enum Action : uint8_t {
     ACT_JUMP = 0,
     ACT_NORMAL = 1,
     ACT_SMASH = 2,
     ACT_BLOCK = 3,
-    ACTION_COUNT = 4,
-    ACT_NONE = 4,
+    ACT_ADVANCE = 4,
+    ACT_RETREAT = 5,
+    ACTION_COUNT = 6,
+    ACT_NONE = 6,
 };
 
 const char* actionName(Action a);
@@ -53,6 +62,10 @@ struct Fighter {
 struct GameState {
     Fighter f[2];
     int32_t frame;
+    // Frames since either fighter last took damage or lost a stock. The
+    // evaluation prices this: without it two maximin players have no reason to
+    // ever commit, because committing is the only thing that can go wrong.
+    int16_t stallFrames;
 };
 
 // Side-channel for the renderer. The search always passes nullptr, so the

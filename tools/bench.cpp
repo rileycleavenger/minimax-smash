@@ -129,7 +129,7 @@ struct MatchResult {
     long long nodes[2] = { 0, 0 };
     double    ms[2] = { 0, 0 };
     int       searches[2] = { 0, 0 };
-    int       actions[2][ACTION_COUNT] = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } };
+    int       actions[2][ACTION_COUNT] = {};
 };
 
 // Both fighters drop in from the respawn height as they do after a KO, but from
@@ -516,9 +516,9 @@ static void reportDiag(int games, int ref, int maxDepth) {
     });
     progressDone();
 
-    std::printf("\n  level   JUMP  NORMAL   SMASH   BLOCK   self-KO/m   shieldbreaks/m   KO'd at\n");
+    std::printf("\n  level   JUMP  NORMAL   SMASH   BLOCK     ADV     RET   self-KO/m   shieldbreaks/m   KO'd at\n");
     for (int d = 1; d <= maxDepth; ++d) {
-        double act[ACTION_COUNT] = { 0, 0, 0, 0 };
+        double act[ACTION_COUNT] = {};
         double searches = 0, matches = 0, sd = 0, sb = 0, koDmg = 0, koN = 0;
         for (const DiagJob& jb : jobs) {
             if (jb.level != d) continue;
@@ -532,9 +532,10 @@ static void reportDiag(int games, int ref, int maxDepth) {
             matches += 1.0;
         }
         if (searches <= 0.0) searches = 1.0;
-        std::printf("  %5d  %4.0f%%   %4.0f%%   %4.0f%%   %4.0f%%      %5.2f            %5.2f     %5.0f%%\n",
+        std::printf("  %5d  %4.0f%%   %4.0f%%   %4.0f%%   %4.0f%%   %4.0f%%   %4.0f%%      %5.2f            %5.2f     %5.0f%%\n",
                     d, 100.0 * act[ACT_JUMP] / searches, 100.0 * act[ACT_NORMAL] / searches,
                     100.0 * act[ACT_SMASH] / searches, 100.0 * act[ACT_BLOCK] / searches,
+                    100.0 * act[ACT_ADVANCE] / searches, 100.0 * act[ACT_RETREAT] / searches,
                     sd / matches, sb / matches, koN > 0 ? koDmg / koN : 0.0);
     }
 }

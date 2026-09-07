@@ -20,12 +20,26 @@ namespace {
 constexpr float INF = 1e30f;
 constexpr long long NODE_CHECK_MASK = 4095;
 
+// Two plies per beat (mine, then the opponent's), plus slack.
+constexpr int MAX_PLY = MAX_CPU_LEVEL * 2 + 2;
+
 struct Ctx {
     int       me;
     long long nodes;
     std::chrono::steady_clock::time_point deadline;
     bool      aborted;
+    // Killer heuristic: the action that most recently caused a cutoff at this
+    // ply, tried first next time. With six actions a side the fixed order is no
+    // longer good enough -- measured effective branching was 7-9x per beat
+    // against a square-root optimum of 6.
+    Action    killer[MAX_PLY];
 };
+
+inline Ctx makeCtx(int me, std::chrono::steady_clock::time_point dl) {
+    Ctx c{ me, 0, dl, false, {} };
+    for (Action& k : c.killer) k = ACT_NONE;
+    return c;
+}
 
 inline bool outOfTime(Ctx& ctx) {
     if (ctx.aborted) return true;
@@ -39,39 +53,46 @@ inline bool outOfTime(Ctx& ctx) {
 // A fighter locked for the whole upcoming beat cannot act, so all four actions
 // are provably identical. Collapsing them is exact and prunes hard, since a
 // whiffed Smash locks its owner for three or four beats.
-inline int candidates(const Fighter& f, Action* out) {
+inline int candidates(const Fighter& f, Action* out, Action killer = ACT_NONE) {
     if (f.state == ST_DEAD || lockRemaining(f) > BEAT_FRAMES) {
         out[0] = ACT_BLOCK;
         return 1;
     }
+    // Static ordering, refined at the root by iterative deepening and here by
+    // the killer. Cheap, safe replies first so alpha-beta gets a bound early.
     out[0] = ACT_BLOCK;
     out[1] = ACT_NORMAL;
-    out[2] = ACT_SMASH;
-    out[3] = ACT_JUMP;
+    out[2] = ACT_ADVANCE;
+    out[3] = ACT_RETREAT;
+    out[4] = ACT_SMASH;
+    out[5] = ACT_JUMP;
+    if (killer < ACTION_COUNT && killer != out[0])
+        for (int i = 1; i < ACTION_COUNT; ++i)
+            if (out[i] == killer) { out[i] = out[0]; out[0] = killer; break; }
     return ACTION_COUNT;
 }
 
-float minNode(const GameState& s, Action mine, int depth, float alpha, float beta, Ctx& ctx);
+float minNode(const GameState& s, Action mine, int depth, float alpha, float beta, Ctx& ctx, int ply);
 
-float maxNode(const GameState& s, int depth, float alpha, float beta, Ctx& ctx) {
+float maxNode(const GameState& s, int depth, float alpha, float beta, Ctx& ctx, int ply) {
     if (depth <= 0 || matchOver(s) || outOfTime(ctx)) return evaluate(s, ctx.me);
 
     Action acts[ACTION_COUNT];
-    const int n = candidates(s.f[ctx.me], acts);
+    const int n = candidates(s.f[ctx.me], acts, ctx.killer[ply]);
 
     float best = -INF;
     for (int i = 0; i < n; ++i) {
-        const float v = minNode(s, acts[i], depth, alpha, beta, ctx);
+        const float v = minNode(s, acts[i], depth, alpha, beta, ctx, ply + 1);
         if (v > best) best = v;
         if (best > alpha) alpha = best;
-        if (alpha >= beta) break;
+        if (alpha >= beta) { ctx.killer[ply] = acts[i]; break; }
     }
     return best;
 }
 
-float minNode(const GameState& s, Action mine, int depth, float alpha, float beta, Ctx& ctx) {
+float minNode(const GameState& s, Action mine, int depth, float alpha, float beta, Ctx& ctx, int ply) {
     Action acts[ACTION_COUNT];
-    const int n = candidates(s.f[1 - ctx.me], acts);
+    const int n = candidates(s.f[1 - ctx.me], acts, ctx.killer[ply]);
 
     float best = INF;
     for (int i = 0; i < n; ++i) {
@@ -80,10 +101,10 @@ float minNode(const GameState& s, Action mine, int depth, float alpha, float bet
         else             stepBeat(ns, acts[i], mine);
         ctx.nodes++;
 
-        const float v = maxNode(ns, depth - 1, alpha, beta, ctx);
+        const float v = maxNode(ns, depth - 1, alpha, beta, ctx, ply + 1);
         if (v < best) best = v;
         if (best < beta) beta = best;
-        if (alpha >= beta) break;
+        if (alpha >= beta) { ctx.killer[ply] = acts[i]; break; }
     }
     return best;
 }
@@ -100,7 +121,7 @@ uint32_t rngNext(uint32_t& st) {
 // and the tie-break never treat a bound as a real score.
 struct RootPass {
     float     value[ACTION_COUNT];
-    bool      exact[ACTION_COUNT] = { false, false, false, false };
+    bool      exact[ACTION_COUNT] = {};
     long long nodes = 0;
     bool      aborted = false;
 };
@@ -110,11 +131,11 @@ using Deadline = std::chrono::steady_clock::time_point;
 RootPass rootPassSerial(const GameState& s, int me, int d, const int* order, int n, Deadline dl) {
     RootPass out;
     for (float& v : out.value) v = -INF;
-    Ctx ctx{ me, 0, dl, false };
+    Ctx ctx = makeCtx(me, dl);
     float alpha = -INF;
     for (int i = 0; i < n; ++i) {
         const Action a = (Action)order[i];
-        const float v = minNode(s, a, d, alpha, INF, ctx);
+        const float v = minNode(s, a, d, alpha, INF, ctx, 1);
         if (ctx.aborted) { out.aborted = true; break; }
         out.value[a] = v;
         // A row that fails low was cut short, so v is only an upper bound.
@@ -135,8 +156,8 @@ RootPass rootPassParallel(const GameState& s, int me, int d, const int* order, i
     RootPass out;
     for (float& v : out.value) v = -INF;
 
-    Ctx c0{ me, 0, dl, false };
-    const float alpha = minNode(s, (Action)order[0], d, -INF, INF, c0);
+    Ctx c0 = makeCtx(me, dl);
+    const float alpha = minNode(s, (Action)order[0], d, -INF, INF, c0, 1);
     out.nodes = c0.nodes;
     if (c0.aborted) { out.aborted = true; return out; }
     out.value[order[0]] = alpha;
@@ -147,10 +168,10 @@ RootPass rootPassParallel(const GameState& s, int me, int d, const int* order, i
     std::thread th[ACTION_COUNT];
 
     for (int i = 1; i < n; ++i) {
-        ctx[i] = Ctx{ me, 0, dl, false };
+        ctx[i] = makeCtx(me, dl);
         val[i] = -INF;
         th[i] = std::thread([&s, d, &order, i, alpha, &ctx, &val] {
-            val[i] = minNode(s, (Action)order[i], d, alpha, INF, ctx[i]);
+            val[i] = minNode(s, (Action)order[i], d, alpha, INF, ctx[i], 1);
         });
     }
     for (int i = 1; i < n; ++i) {
@@ -173,6 +194,12 @@ std::atomic<int> gSearchBudgetMs{ SEARCH_BUDGET_DEFAULT_MS };
 SearchStats searchRoot(const GameState& s, int me, int depth, uint32_t* rngState) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
+
+    // The killer table is sized from MAX_CPU_LEVEL, so a deeper request would
+    // run off the end of it. Clamp rather than trust every caller: the harness
+    // sweeps depths, and a silent buffer overrun is a poor way to find out.
+    if (depth < 1) depth = 1;
+    if (depth > MAX_CPU_LEVEL) depth = MAX_CPU_LEVEL;
 
     SearchStats out;
     for (int i = 0; i < ACTION_COUNT; ++i) {
@@ -204,7 +231,7 @@ SearchStats searchRoot(const GameState& s, int me, int depth, uint32_t* rngState
     for (int i = 0; i < n; ++i) order[i] = acts[i];
 
     float bestValue[ACTION_COUNT];
-    bool  exact[ACTION_COUNT] = { false, false, false, false };
+    bool  exact[ACTION_COUNT] = {};
     static thread_local uint32_t threadRng = 0x9e3779b9u;
     uint32_t& rng = rngState ? *rngState : threadRng;
 

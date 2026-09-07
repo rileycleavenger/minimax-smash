@@ -38,13 +38,35 @@ float evaluate(const GameState& s, int me) {
     // Shield is a spendable resource, not free safety. Without this, pure
     // maximin discovers that blocking never loses an exchange and turtles.
     v -= W_SHIELD_SPENT * (charStats(a.charId).shieldMax - a.shield);
+    // ...and spending *theirs* is progress. Without this, attacking into a held
+    // shield scored exactly the same as doing nothing, so a shallow search had
+    // no reason to throw the first punch and the match never started. Weighted
+    // below my own for the usual reason: it is worth what it leads to.
+    v += W_OPP_SHIELD_SPENT * (charStats(b.charId).shieldMax - b.shield);
     if (a.state == ST_SHIELDBREAK) v -= W_SHIELDBROKEN;
     // Small on purpose: see the note in stats.h. A large bonus here is a bonus
     // for *not* taking the punish, because taking it ends the break.
     if (b.state == ST_SHIELDBREAK) v += W_OPP_SHIELDBROKEN;
 
+    // Maximin has no reason to seek a fight. Approaching always has a worst-case
+    // answer, so two pessimistic players will stand and look at each other --
+    // and once Retreat became searchable that is exactly what happened: every
+    // level drew every match, oscillating advance/retreat on a two-beat cycle.
+    //
+    // Pricing the *distance* between them does not fix it. In a zero-sum tree
+    // the opponent controls separation too, so it simply keeps away and the term
+    // becomes a constant that distinguishes nothing (measured: no effect at all).
+    // Pricing elapsed time without damage does work, because whether a hit lands
+    // is something I can act on and the opponent cannot simply cancel.
+    v -= W_STALL * (float)s.stallFrames;
+
     // Asymmetric on purpose: stalling is *my* problem because I have to win.
     // The symmetric version cancels when both hold shield and the turtle remains.
+    //
+    // Scoped to holding shield rather than to being uncommitted generally:
+    // widening it to "not committed" is gameable, because throwing an attack
+    // from outside anyone's range counts as committing. Measured, a depth-1 CPU
+    // did exactly that -- whiff-spamming Normal from 200 units away forever.
     if (a.state == ST_BLOCK && !committed(b)) v -= W_STALE_SHIELD;
 
     return v;

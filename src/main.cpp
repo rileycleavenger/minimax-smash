@@ -54,7 +54,8 @@ static void drainWorker(SearchWorker& w) {
 }
 
 static void drawDebug(const GameState& s, const CpuDriver& cpu, int who, int level, float px) {
-    const float py = 74.0f, w = 292.0f, h = 236.0f;
+    // Height follows the action count: six rows now that movement is searched.
+    const float py = 74.0f, w = 292.0f, h = 172.0f + ACTION_COUNT * 16.0f;
     DrawRectangleRounded(Rectangle{ px, py, w, h }, 0.06f, 8, Color{ 10, 12, 20, 215 });
     DrawRectangleRoundedLinesEx(Rectangle{ px, py, w, h }, 0.06f, 8, 1.0f, Color{ 60, 72, 96, 255 });
 

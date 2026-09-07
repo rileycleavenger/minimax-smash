@@ -114,7 +114,8 @@ constexpr float W_STOCK        = 10000.0f;
 constexpr float W_DAMAGE       = 1.0f;
 constexpr float W_EDGE         = 60.0f;
 constexpr float W_OFFSTAGE     = 25.0f;
-constexpr float W_SHIELD_SPENT = 0.55f;
+constexpr float W_SHIELD_SPENT     = 0.55f;   // stamina I have spent
+constexpr float W_OPP_SHIELD_SPENT = 0.30f;   // stamina I have made them spend
 // These two are deliberately not the same number. My own shield breaking is an
 // emergency that persists whatever I do, so it is worth a lot. The *opponent's*
 // broken shield is worth only what I can convert it into -- and a bonus that
@@ -124,7 +125,28 @@ constexpr float W_SHIELD_SPENT = 0.55f;
 constexpr float W_SHIELDBROKEN     = 120.0f;   // mine
 constexpr float W_OPP_SHIELDBROKEN = 10.0f;    // theirs
 constexpr float W_STALE_SHIELD = 18.0f;  // holding shield vs a non-attacker
+constexpr float W_STALL        = 0.12f;  // per frame since anyone last took damage
+
+// Long enough that a real lull is priced, bounded so the term cannot swamp the
+// rest of the evaluation once a match has genuinely stagnated.
+constexpr int   STALL_CAP      = 600;
+
+// Movement actions are distance targets, in multiples of the fighter's own
+// normal-attack reach, rather than raw directions. Advance closes to poke range;
+// Retreat opens to just outside it. Neither can be used to leave the fight.
+//
+// Two fighters who can both disengage at will have no reason to ever fight, and
+// measurably did not: every level drew every match on a two-beat advance/retreat
+// cycle. Gating retreat on a separation threshold instead just moved the problem
+// -- the fighter pinned itself exactly on the threshold and jittered across it.
+// Converging on a target has no boundary to sit on.
+constexpr float ADVANCE_DIST = 0.7f;   // same range autoWalkDir closes to
+constexpr float RETREAT_DIST = 1.6f;   // outside their poke, inside one beat's walk
 constexpr float W_HITSTUN      = 12.0f;  // opponent currently in hitstun
 constexpr float W_DMG_DEALT    = 1.25f;  // dealing damage is worth more than taking it
 
-constexpr int MAX_CPU_LEVEL = 8;
+// Six actions a side means 36 joint actions per node against 16, and alpha-beta
+// already runs at its square-root optimum here, so each extra beat costs ~6x
+// rather than ~4x. Depth 6 lands near 80ms against a 167ms beat; 7 and 8 are out
+// of reach. Searched movement is worth those two levels.
+constexpr int MAX_CPU_LEVEL = 6;

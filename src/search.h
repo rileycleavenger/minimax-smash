@@ -12,19 +12,19 @@ constexpr float TIE_EPSILON = 0.2f;
 // Sentinel for gRootSplitMinDepth meaning "never split the root".
 constexpr int ROOT_SPLIT_OFF = MAX_CPU_LEVEL + 1;
 
-// Measured default. Alpha-beta spends most of its time in one root subtree, so
-// splitting the root is worth only about 10% and only at the top of the ladder --
-// below this depth the thread hand-off costs more than it saves. `bench time`
-// prints the sequential and split columns side by side.
-constexpr int ROOT_SPLIT_DEFAULT = 7;
+// Measured default. With six root moves the work spreads across more siblings
+// than it did with four, so the split is worth ~20% from here up; below this
+// depth the thread hand-off costs more than it saves. `bench time` prints the
+// sequential and split columns side by side so this stays checkable.
+constexpr int ROOT_SPLIT_DEFAULT = 5;
 
 struct SearchStats {
     Action    best = ACT_BLOCK;
     float     value = 0.0f;
-    float     actionValue[ACTION_COUNT] = { 0, 0, 0, 0 };
-    bool      actionExact[ACTION_COUNT] = { false, false, false, false };
-    bool      actionTied[ACTION_COUNT]  = { false, false, false, false };
-    bool      actionLegal[ACTION_COUNT] = { true, true, true, true };
+    float     actionValue[ACTION_COUNT] = {};
+    bool      actionExact[ACTION_COUNT] = {};
+    bool      actionTied[ACTION_COUNT]  = {};
+    bool      actionLegal[ACTION_COUNT] = {};
     long long nodes = 0;
     double    ms = 0.0;
     int       depth = 0;        // deepest fully completed iteration
@@ -48,6 +48,8 @@ extern std::atomic<int> gSearchBudgetMs;
 constexpr int SEARCH_BUDGET_DEFAULT_MS = 400;
 
 // Full maximin search to a fixed depth, on the calling thread.
+//
+// `depth` is clamped to [1, MAX_CPU_LEVEL].
 //
 // `rngState` seeds the coin flip between near-tied actions. The live game
 // passes nullptr and gets a per-thread stream, which is what keeps the CPU from
