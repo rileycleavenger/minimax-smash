@@ -125,44 +125,52 @@ RootPass rootPassSerial(const GameState& s, int me, int d, const int* order, int
     return out;
 }
 
-// Root split: the four candidate actions are independent subtrees, so they run
-// on separate cores. This gives up pruning between root siblings and buys back
-// far more in wall-clock time at the depths where it matters.
+// Root split. The naive version -- fan all four subtrees out with a full window
+// -- gives up every root cutoff and roughly doubles the node count, which ate
+// most of what the extra cores bought. So the best-ordered move is searched
+// alone first to establish alpha, and only then do the remaining siblings run
+// concurrently against that real lower bound. Nearly all of the root pruning
+// lives in that first move, so this keeps it and still parallelises the rest.
 RootPass rootPassParallel(const GameState& s, int me, int d, const int* order, int n, Deadline dl) {
     RootPass out;
     for (float& v : out.value) v = -INF;
+
+    Ctx c0{ me, 0, dl, false };
+    const float alpha = minNode(s, (Action)order[0], d, -INF, INF, c0);
+    out.nodes = c0.nodes;
+    if (c0.aborted) { out.aborted = true; return out; }
+    out.value[order[0]] = alpha;
+    out.exact[order[0]] = true;
 
     Ctx         ctx[ACTION_COUNT];
     float       val[ACTION_COUNT];
     std::thread th[ACTION_COUNT];
 
-    for (int i = 0; i < n; ++i) {
+    for (int i = 1; i < n; ++i) {
         ctx[i] = Ctx{ me, 0, dl, false };
         val[i] = -INF;
-        th[i] = std::thread([&s, me, d, &order, i, &ctx, &val] {
-            (void)me;
-            val[i] = minNode(s, (Action)order[i], d, -INF, INF, ctx[i]);
+        th[i] = std::thread([&s, d, &order, i, alpha, &ctx, &val] {
+            val[i] = minNode(s, (Action)order[i], d, alpha, INF, ctx[i]);
         });
     }
-    for (int i = 0; i < n; ++i) {
+    for (int i = 1; i < n; ++i) {
         th[i].join();
         out.value[order[i]] = val[i];
-        out.exact[order[i]] = true;   // full window, so nothing was cut short
+        // Same rule as the sequential pass: a row that fails low was cut short,
+        // so its value is only an upper bound.
+        out.exact[order[i]] = (val[i] > alpha);
         out.nodes += ctx[i].nodes;
         if (ctx[i].aborted) out.aborted = true;
     }
     return out;
 }
 
-// Splitting the root costs the pruning that alpha-beta gets from searching
-// siblings in sequence, and at these tree sizes that pruning is worth more than
-// four cores until the very top of the ladder. Measured on an M4 Pro: depth 7
-// is a wash, depth 8 goes from ~93ms to ~65ms.
-constexpr int PARALLEL_MIN_DEPTH = 8;
-
 }  // namespace
 
-SearchStats searchRoot(const GameState& s, int me, int depth) {
+std::atomic<int> gRootSplitMinDepth{ ROOT_SPLIT_DEFAULT };
+std::atomic<int> gSearchBudgetMs{ SEARCH_BUDGET_DEFAULT_MS };
+
+SearchStats searchRoot(const GameState& s, int me, int depth, uint32_t* rngState) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
 
@@ -188,7 +196,7 @@ SearchStats searchRoot(const GameState& s, int me, int depth) {
         return out;
     }
 
-    const auto deadline = t0 + std::chrono::milliseconds(400);
+    const auto deadline = t0 + std::chrono::milliseconds(gSearchBudgetMs.load(std::memory_order_relaxed));
 
     // Root ordering carried between iterations; searching the previous best
     // first is what makes alpha-beta pay off at higher depths.
@@ -197,10 +205,13 @@ SearchStats searchRoot(const GameState& s, int me, int depth) {
 
     float bestValue[ACTION_COUNT];
     bool  exact[ACTION_COUNT] = { false, false, false, false };
-    static thread_local uint32_t rng = 0x9e3779b9u;
+    static thread_local uint32_t threadRng = 0x9e3779b9u;
+    uint32_t& rng = rngState ? *rngState : threadRng;
+
+    const int splitAt = gRootSplitMinDepth.load(std::memory_order_relaxed);
 
     for (int d = 1; d <= depth; ++d) {
-        const RootPass pass = (d >= PARALLEL_MIN_DEPTH)
+        const RootPass pass = (d >= splitAt)
                                   ? rootPassParallel(s, me, d, order, n, deadline)
                                   : rootPassSerial(s, me, d, order, n, deadline);
         out.nodes += pass.nodes;

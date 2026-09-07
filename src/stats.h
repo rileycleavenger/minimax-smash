@@ -33,7 +33,11 @@ constexpr int BLOCKLAG_FRAMES    = 12;   // full lockout after dropping shield
 constexpr int SHIELDBREAK_FRAMES = 100;
 constexpr int RESPAWN_FRAMES     = 20;
 constexpr int RESPAWN_INVULN     = 80;
-constexpr int JUMP_LOCK          = 9;    // frames before a held jump repeats
+// A CPU holds one action for a whole beat, so this must be >= BEAT_FRAMES or a
+// held ACT_JUMP silently spends both jumps inside a single decision. Setting it
+// equal to the beat makes "hold jump for one beat" mean exactly one jump, which
+// is what the search assumes it is buying and what recovery depends on.
+constexpr int JUMP_LOCK          = BEAT_FRAMES;
 
 constexpr float SHIELD_DMG_SCALE = 1.5f;
 constexpr float SHIELD_DMG_BASE  = 5.0f;
@@ -74,33 +78,36 @@ struct CharStats {
 
 enum CharId { CHAR_SPARKMOUSE = 0, CHAR_PLUMBER = 1, CHAR_COUNT = 2 };
 
-inline const CharStats& charStats(unsigned id) {
-    static const CharStats table[CHAR_COUNT] = {
-        // Sparkmouse: fast, light, low damage per hit, quick startup.
-        {   "SPARKMOUSE",
-            /*walk*/ 3.7f, /*airAccel*/ 0.40f, /*airMax*/ 4.4f, /*jumpVel*/ 11.6f,
-            /*gravity*/ 0.62f, /*fallMax*/ 12.0f, /*weight*/ 80.0f, /*jumps*/ 2,
-            /*shield*/ 100.0f, /*drain*/ 0.85f, /*regen*/ 0.45f,
-            {
-                //  su  act rec  dmg  reach hitY hitH  baseKB  growth  angle
-                {    4,  3,  8,  4.0f, 34.f, 30.f, 22.f,  6.0f, 0.105f, 42.f },
-                {   16,  4, 26, 12.0f, 46.f, 30.f, 26.f, 11.0f, 0.125f, 38.f },
-            }
-        },
-        // Plumber: heavier and slower, but hits noticeably harder with reach.
-        {   "PLUMBER",
-            /*walk*/ 3.0f, /*airAccel*/ 0.34f, /*airMax*/ 3.8f, /*jumpVel*/ 12.1f,
-            /*gravity*/ 0.66f, /*fallMax*/ 13.0f, /*weight*/ 100.0f, /*jumps*/ 2,
-            /*shield*/ 110.0f, /*drain*/ 0.80f, /*regen*/ 0.40f,
-            {
-                //  su  act rec  dmg  reach hitY hitH  baseKB  growth  angle
-                {    6,  3, 10,  6.0f, 40.f, 30.f, 24.f,  6.5f, 0.115f, 42.f },
-                {   20,  4, 30, 16.0f, 54.f, 30.f, 28.f, 13.0f, 0.128f, 36.f },
-            }
-        },
-    };
-    return table[id];
-}
+// Namespace-scope constexpr rather than a function-local static: a static local
+// carries a thread-safe-initialisation guard that has to be checked on every
+// call, and the search reaches for this table several times per simulated frame
+// across millions of frames.
+inline constexpr CharStats CHAR_TABLE[CHAR_COUNT] = {
+    // Sparkmouse: fast, light, low damage per hit, quick startup.
+    {   "SPARKMOUSE",
+        /*walk*/ 3.7f, /*airAccel*/ 0.40f, /*airMax*/ 4.4f, /*jumpVel*/ 11.6f,
+        /*gravity*/ 0.62f, /*fallMax*/ 12.0f, /*weight*/ 80.0f, /*jumps*/ 2,
+        /*shield*/ 100.0f, /*drain*/ 0.85f, /*regen*/ 0.45f,
+        {
+            //  su  act rec  dmg  reach hitY hitH  baseKB  growth  angle
+            {    4,  3,  8,  4.0f, 34.f, 30.f, 22.f,  6.0f, 0.105f, 42.f },
+            {   16,  4, 26, 12.0f, 46.f, 30.f, 26.f, 11.0f, 0.125f, 38.f },
+        }
+    },
+    // Plumber: heavier and slower, but hits noticeably harder with reach.
+    {   "PLUMBER",
+        /*walk*/ 3.0f, /*airAccel*/ 0.34f, /*airMax*/ 3.8f, /*jumpVel*/ 12.1f,
+        /*gravity*/ 0.66f, /*fallMax*/ 13.0f, /*weight*/ 100.0f, /*jumps*/ 2,
+        /*shield*/ 110.0f, /*drain*/ 0.80f, /*regen*/ 0.40f,
+        {
+            //  su  act rec  dmg  reach hitY hitH  baseKB  growth  angle
+            {    6,  3, 10,  6.0f, 40.f, 30.f, 24.f,  6.5f, 0.115f, 42.f },
+            {   20,  4, 30, 16.0f, 54.f, 30.f, 28.f, 13.0f, 0.128f, 36.f },
+        }
+    },
+};
+
+inline constexpr const CharStats& charStats(unsigned id) { return CHAR_TABLE[id]; }
 
 // ------------------------------------------------------------ evaluation ----
 constexpr float W_STOCK        = 10000.0f;
@@ -108,7 +115,14 @@ constexpr float W_DAMAGE       = 1.0f;
 constexpr float W_EDGE         = 60.0f;
 constexpr float W_OFFSTAGE     = 25.0f;
 constexpr float W_SHIELD_SPENT = 0.55f;
-constexpr float W_SHIELDBROKEN = 120.0f;
+// These two are deliberately not the same number. My own shield breaking is an
+// emergency that persists whatever I do, so it is worth a lot. The *opponent's*
+// broken shield is worth only what I can convert it into -- and a bonus that
+// large is forfeited the instant I land the hit that ends the break, so pricing
+// them symmetrically taught the search to stand and admire a helpless opponent
+// rather than punish one. It must stay below the damage a free hit is worth.
+constexpr float W_SHIELDBROKEN     = 120.0f;   // mine
+constexpr float W_OPP_SHIELDBROKEN = 10.0f;    // theirs
 constexpr float W_STALE_SHIELD = 18.0f;  // holding shield vs a non-attacker
 constexpr float W_HITSTUN      = 12.0f;  // opponent currently in hitstun
 constexpr float W_DMG_DEALT    = 1.25f;  // dealing damage is worth more than taking it

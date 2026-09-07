@@ -77,6 +77,12 @@ int  winnerOf(const GameState& s);            // -1 if still running
 int  lockRemaining(const Fighter& f);
 inline bool actionable(const Fighter& f) { return f.state == ST_IDLE || f.state == ST_BLOCK; }
 
+// Would this action actually do anything for this fighter on this frame? A jump
+// during the post-jump lock and a block in mid-air are both silently ignored by
+// applyAction, so the input buffer needs to know the difference between "came
+// out" and "was swallowed" or a quickly tapped double jump disappears.
+bool actionHasEffect(const Fighter& f, Action a);
+
 inline const MoveStats& moveOf(const Fighter& f) {
     return charStats(f.charId).moves[f.moveId];
 }

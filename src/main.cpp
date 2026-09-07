@@ -226,7 +226,10 @@ int main(int argc, char** argv) {
                 Action human = ACT_NONE;
                 if (buf.timer > 0) {
                     human = buf.act;
-                    if (actionable(s.f[0])) buf.timer = 0;
+                    // Only spend the buffered input once it can actually come
+                    // out; otherwise a second jump tapped inside the jump lock
+                    // is eaten and the player never sees it.
+                    if (actionHasEffect(s.f[0], buf.act)) buf.timer = 0;
                 } else if (blockHeld) {
                     human = ACT_BLOCK;
                 }
@@ -304,7 +307,11 @@ int main(int argc, char** argv) {
                 opt.shotFrame = (int)s.frame;   // present one more frame, then fire
                 continue;
             }
-            TakeScreenshot(opt.shotPath);
+            // Not TakeScreenshot: raylib prefixes it with the working
+            // directory, so any absolute --out path silently fails to write.
+            Image shot = LoadImageFromScreen();
+            ExportImage(shot, opt.shotPath);
+            UnloadImage(shot);
             break;
         }
     }

@@ -68,6 +68,17 @@ int lockRemaining(const Fighter& f) {
     }
 }
 
+bool actionHasEffect(const Fighter& f, Action a) {
+    if (!actionable(f)) return false;
+    switch (a) {
+        case ACT_JUMP:   return f.jumpLock == 0 && f.jumpsLeft > 0;
+        case ACT_BLOCK:  return f.onGround;
+        case ACT_NORMAL:
+        case ACT_SMASH:  return true;
+        default:         return false;
+    }
+}
+
 void hitboxOf(const Fighter& f, float& x0, float& y0, float& x1, float& y1) {
     const MoveStats& m = moveOf(f);
     if (f.facing > 0) {

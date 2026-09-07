@@ -39,7 +39,9 @@ float evaluate(const GameState& s, int me) {
     // maximin discovers that blocking never loses an exchange and turtles.
     v -= W_SHIELD_SPENT * (charStats(a.charId).shieldMax - a.shield);
     if (a.state == ST_SHIELDBREAK) v -= W_SHIELDBROKEN;
-    if (b.state == ST_SHIELDBREAK) v += W_SHIELDBROKEN;
+    // Small on purpose: see the note in stats.h. A large bonus here is a bonus
+    // for *not* taking the punish, because taking it ends the break.
+    if (b.state == ST_SHIELDBREAK) v += W_OPP_SHIELDBROKEN;
 
     // Asymmetric on purpose: stalling is *my* problem because I have to win.
     // The symmetric version cancels when both hold shield and the turtle remains.
